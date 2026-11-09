@@ -199,13 +199,73 @@
   function updateCertLink() { $('#certLink').href = ip ? `https://${ip}:3001` : '#'; }
 
   // ---- WebSocket plumbing ----
-  function openSocket(url, timeoutMs = 4000) {
+  // LG TVs reject connections from websites ("invalid origin"), but accept
+  // pages with no origin. So the actual sockets live inside a hidden data: frame
+  // (which has no origin), and this page talks to them through postMessage.
+  const FRAME_SRC = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<script>
+    const socks = {};
+    addEventListener('message', e => {
+      if (e.source !== parent) return;
+      const d = e.data || {}, post = m => parent.postMessage(Object.assign({ lgProxy: 1, id: d.id }, m), '*');
+      if (d.cmd === 'open') {
+        let s;
+        try { s = new WebSocket(d.url); } catch (err) { post({ ev: 'error' }); post({ ev: 'close', code: 0, reason: String(err) }); return; }
+        socks[d.id] = s;
+        s.onopen = () => post({ ev: 'open' });
+        s.onmessage = m => post({ ev: 'message', data: typeof m.data === 'string' ? m.data : '' });
+        s.onerror = () => post({ ev: 'error' });
+        s.onclose = c => { delete socks[d.id]; post({ ev: 'close', code: c.code, reason: c.reason }); };
+      } else if (d.cmd === 'send') { const s = socks[d.id]; if (s && s.readyState === 1) s.send(d.data); }
+      else if (d.cmd === 'close') { const s = socks[d.id]; if (s) try { s.close(); } catch (_) {} }
+    });
+    parent.postMessage({ lgProxy: 1, ready: 1 }, '*');
+  <\/script>`);
+
+  let frame = null, frameReady = null, sockSeq = 0;
+  const proxySocks = new Map();
+  function getFrame() {
+    if (frameReady) return frameReady;
+    frameReady = new Promise((resolve, reject) => {
+      frame = document.createElement('iframe');
+      frame.style.display = 'none';
+      frame.src = FRAME_SRC;
+      const t = setTimeout(() => reject(new Error('Helper frame did not load')), 5000);
+      window.addEventListener('message', e => {
+        if (!frame || e.source !== frame.contentWindow) return;
+        const d = e.data || {};
+        if (!d.lgProxy) return;
+        if (d.ready) { clearTimeout(t); resolve(); return; }
+        const s = proxySocks.get(d.id); if (!s) return;
+        if (d.ev === 'open') { s.readyState = 1; s.onopen && s.onopen(); }
+        else if (d.ev === 'message') { s.onmessage && s.onmessage({ data: d.data }); }
+        else if (d.ev === 'error') { s.onerror && s.onerror(); }
+        else if (d.ev === 'close') { s.readyState = 3; proxySocks.delete(d.id); s.onclose && s.onclose({ code: d.code, reason: d.reason }); }
+      });
+      document.body.appendChild(frame);
+    });
+    frameReady.catch(() => { frameReady = null; });
+    return frameReady;
+  }
+  // Same shape as a WebSocket, so the rest of the code doesn't care.
+  class ProxySocket {
+    constructor(url) {
+      this.id = ++sockSeq; this.readyState = 0;
+      this.onopen = this.onmessage = this.onerror = this.onclose = null;
+      proxySocks.set(this.id, this);
+      frame.contentWindow.postMessage({ cmd: 'open', id: this.id, url }, '*');
+    }
+    send(data) { frame.contentWindow.postMessage({ cmd: 'send', id: this.id, data }, '*'); }
+    close() { this.readyState = 2; frame.contentWindow.postMessage({ cmd: 'close', id: this.id }, '*'); }
+  }
+
+  async function openSocket(url, timeoutMs = 4000) {
+    await getFrame();
     return new Promise((resolve, reject) => {
-      let s;
-      try { s = new WebSocket(url); } catch (e) { return reject(e); }
+      const s = new ProxySocket(url);
       const t = setTimeout(() => { try { s.close(); } catch {} reject(new Error('timeout')); }, timeoutMs);
       s.onopen = () => { clearTimeout(t); resolve(s); };
       s.onerror = () => { clearTimeout(t); reject(new Error('error')); };
+      s.onclose = e => { clearTimeout(t); reject(new Error(e.reason || 'closed')); };
     });
   }
 
