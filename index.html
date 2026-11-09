@@ -194,13 +194,14 @@
   function setStatus(state, text) {
     $('#dot').className = 'dot ' + state;
     $('#statusText').textContent = text;
-    remoteEl.classList.toggle('disabled', state !== 'on');
+    remoteEl.classList.toggle('disabled', state !== 'on' && !isPaired());
   }
   let toastTimer;
   function toast(t) {
     const el = $('#toast'); el.textContent = t; el.classList.add('show');
     clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
   }
+  function isPaired() { return !!(ip && store.get('lg_key_' + ip)); }
   function showSetup(show) { setupEl.classList.toggle('hidden', !show); }
   function updateCertLink() { $('#certLink').href = ip ? `https://${ip}:3001` : '#'; }
 
@@ -339,7 +340,7 @@
           trace(`TV closed the connection (code ${e.code})`);
           if (ws === s) { ws = null; inputWs = null; }
           for (const p of [...pending.values()]) p.fail(new Error(closedMsg()));
-          if (!connecting) setStatus('off', 'Disconnected');
+          if (!connecting && ws === null) { setStatus('busy', 'Reconnecting…'); ensureConnected(); }
         };
         return;
       } catch (err) { trace(`Could not open ${u} (${err.message})`); }
@@ -367,13 +368,15 @@
   }
 
   // ---- Connect / pair ----
-  async function connect() {
+  async function connect(opts = {}) {
     if (connecting) return;
     ip = ipEl.value.trim();
     if (!ip) { msgEl.textContent = 'Enter your TV\'s IP address.'; return; }
+    const auto = !!opts.auto;
+    clearTimeout(retryTimer);
     connecting = true; msgEl.textContent = ''; logLines = []; logEl.textContent = '';
     store.set('lg_ip', ip); updateCertLink();
-    closeAll(); setStatus('busy', 'Connecting…');
+    closeAll(); setStatus('busy', auto ? 'Reconnecting…' : 'Connecting…');
 
     try {
       await openMain();
@@ -398,8 +401,20 @@
         toast('Connected, but arrows/OK/Home may not work');
       }
       showSetup(false);
+      retries = 0;
+      runQueued();
     } catch (e) {
       closeAll();
+      if (auto && isPaired() && e.message !== 'Cancelled') {
+        // Quietly keep trying while the app is open (Wi-Fi may still be waking up).
+        retries++;
+        const delay = Math.min(1000 * 2 ** (retries - 1), 10000);
+        setStatus('busy', 'Reconnecting…');
+        if (document.visibilityState === 'visible') retryTimer = setTimeout(() => connect({ auto: true }), delay);
+        if (retries >= 4) setStatus('off', 'TV unreachable — retrying');
+        return;
+      }
+      queued = null;
       setStatus('off', 'Not connected');
       showSetup(true);
       msgEl.textContent = e.message === 'cert'
@@ -463,7 +478,12 @@
     for (const u of candidates) {
       try {
         inputWs = await openSocket(u);
-        inputWs.onclose = () => { inputWs = null; };
+        const mine = inputWs;
+        mine.onclose = () => {
+          if (inputWs !== mine) return;
+          inputWs = null;
+          if (!connecting && ws && ws.readyState === 1) openInput().catch(() => ensureConnected(true));
+        };
         return;
       } catch {}
     }
@@ -472,11 +492,23 @@
 
   // ---- Actions ----
   function pressButton(name) {
-    if (!inputWs || inputWs.readyState !== 1) { toast('Not connected'); return; }
+    if (!inputWs || inputWs.readyState !== 1) { queue(() => pressButton(name)); return; }
     inputWs.send(`type:button\nname:${name}\n\n`);
   }
   function callUri(uri, payload) {
+    if (!ws || ws.readyState !== 1) { queue(() => callUri(uri, payload)); return; }
     request(uri, payload).catch(e => toast(e.message));
+  }
+  // Remember the last tap made while disconnected and send it once reconnected.
+  let queued = null;
+  function queue(fn) {
+    if (!isPaired()) { toast('Not connected'); return; }
+    queued = fn;
+    ensureConnected(true);
+  }
+  function runQueued() {
+    const fn = queued; queued = null;
+    if (fn) setTimeout(fn, 50);
   }
   function haptic() { try { navigator.vibrate && navigator.vibrate(8); } catch {} }
 
@@ -559,14 +591,39 @@
     toast('Pairing forgotten. Connect again to re-pair.');
   };
 
-  // Reconnect when the phone wakes or the tab comes back.
+  // ---- Auto-reconnect ----
+  // Phones freeze or kill the connection when the app goes to the background.
+  // Whenever the app comes back (or the network returns), check the connection
+  // and quietly reconnect if it's gone.
+  let retryTimer = null, retries = 0, checking = false;
+  async function ensureConnected(force) {
+    if (connecting || checking || !ipEl.value.trim() || !isPaired()) return;
+    if (document.visibilityState !== 'visible') return;
+    if (!force && ws && ws.readyState === 1) {
+      // A socket can look open after the phone slept but actually be dead; ping it.
+      checking = true;
+      try {
+        await request('audio/getVolume', {}, 1500);
+        if (!inputWs || inputWs.readyState !== 1) await openInput().catch(() => {});
+        setStatus('on', 'Connected');
+        checking = false;
+        return;
+      } catch { checking = false; }
+    }
+    retries = 0;
+    connect({ auto: true });
+  }
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && !ws && ipEl.value.trim()) connect();
+    if (document.visibilityState === 'visible') ensureConnected();
+    else clearTimeout(retryTimer);
   });
+  window.addEventListener('pageshow', () => ensureConnected());
+  window.addEventListener('focus', () => ensureConnected());
+  window.addEventListener('online', () => ensureConnected(true));
 
   // Auto-connect with the saved IP.
   const saved = store.get('lg_ip');
-  if (saved) { ipEl.value = saved; ip = saved; updateCertLink(); connect(); }
+  if (saved) { ipEl.value = saved; ip = saved; updateCertLink(); isPaired() ? connect({ auto: true }) : connect(); }
   else setStatus('off', 'Not connected');
 })();
 </script>
