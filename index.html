@@ -44,6 +44,8 @@
   .hint a { color: var(--text); }
   .msg { font-size: 13px; margin: 0; color: var(--warn); }
   .msg:empty { display: none; }
+  .log { margin: 0; font: 12px/1.45 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; word-break: break-all; }
+  .log:empty { display: none; }
 
   button.k { background: var(--btn); color: var(--text); border: 0; border-radius: 14px; height: 54px;
     font-size: 15px; font-weight: 500; cursor: pointer; touch-action: manipulation; user-select: none; -webkit-user-select: none;
@@ -97,6 +99,7 @@
       <button class="primary" id="connectBtn">Connect</button>
     </div>
     <p class="msg" id="msg"></p>
+    <pre class="log" id="log"></pre>
     <p class="hint">First time: the TV will ask to allow this remote. Accept it with your normal remote.</p>
     <p class="hint">Won't connect? <a id="certLink" href="#" target="_blank" rel="noopener">Open the TV's address</a>,
       accept the security warning, then come back and tap Connect.
@@ -206,17 +209,28 @@
     });
   }
 
+  // ---- Diagnostics: a short log of the last connection attempt ----
+  const logEl = document.getElementById('log');
+  let logLines = [];
+  function trace(t) {
+    logLines.push(t);
+    logEl.textContent = logLines.join('\n');
+  }
+
   // Send a message and route replies with the same id to `handler`.
   // handler returns 'wait' to keep listening, an Error to reject, anything else to resolve.
   function send(msg, handler, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
-      if (!ws || ws.readyState !== 1) return reject(new Error('Not connected'));
+      if (!ws || ws.readyState !== 1) return reject(new Error(closedMsg()));
       const t = setTimeout(() => { pending.delete(msg.id); reject(new Error('Timed out')); }, timeoutMs);
-      pending.set(msg.id, m => {
-        const r = handler(m);
-        if (r === 'wait') return;
-        clearTimeout(t); pending.delete(msg.id);
-        r instanceof Error ? reject(r) : resolve(r);
+      pending.set(msg.id, {
+        onMsg: m => {
+          const r = handler(m);
+          if (r === 'wait') return;
+          clearTimeout(t); pending.delete(msg.id);
+          r instanceof Error ? reject(r) : resolve(r);
+        },
+        fail: err => { clearTimeout(t); pending.delete(msg.id); reject(err); },
       });
       ws.send(JSON.stringify(msg));
     });
@@ -227,9 +241,63 @@
       m => m.type === 'error' ? new Error(m.error || 'TV error') : (m.payload || {}), timeoutMs);
   }
 
+  let lastClose = null;
+  function closedMsg() {
+    return lastClose ? `TV closed the connection (code ${lastClose.code}${lastClose.reason ? ', ' + lastClose.reason : ''})`
+                     : 'Not connected';
+  }
+
   function closeAll() {
     for (const s of [ws, inputWs]) { if (s) { s.onclose = null; try { s.close(); } catch {} } }
-    ws = inputWs = null; pending.clear();
+    ws = inputWs = null;
+    for (const p of [...pending.values()]) p.fail(new Error('Cancelled'));
+    pending.clear();
+  }
+
+  async function openMain() {
+    // Newer TVs use secure port 3001; older ones only plain 3000.
+    // An https:// page can't use plain ws://, so skip it there.
+    const urls = [`wss://${ip}:3001`];
+    if (location.protocol !== 'https:') urls.push(`ws://${ip}:3000`);
+    for (const u of urls) {
+      try {
+        const s = await openSocket(u);
+        trace('Opened ' + u);
+        mainUrl = u; lastClose = null; ws = s;
+        s.onmessage = e => {
+          let m; try { m = JSON.parse(e.data); } catch { return; }
+          const h = pending.get(m.id); if (h) h.onMsg(m);
+        };
+        s.onclose = e => {
+          lastClose = { code: e.code, reason: e.reason };
+          trace(`TV closed the connection (code ${e.code})`);
+          if (ws === s) { ws = null; inputWs = null; }
+          for (const p of [...pending.values()]) p.fail(new Error(closedMsg()));
+          if (!connecting) setStatus('off', 'Disconnected');
+        };
+        return;
+      } catch (err) { trace(`Could not open ${u} (${err.message})`); }
+    }
+    throw new Error('cert');
+  }
+
+  // Two handshake styles. "full" matches what current LG firmware expects
+  // (hello, then system info, then pairing). "classic" pairs immediately,
+  // which is what older TVs were built around.
+  async function handshake(style) {
+    trace(`Handshake: ${style}`);
+    if (style === 'full') {
+      try {
+        await send({ id: 'hello', type: 'hello', payload: {} }, m => true, 2500);
+        trace('Hello OK');
+      } catch (e) { trace('Hello: ' + e.message); if (!ws) throw e; }
+      try {
+        await request('system/getSystemInfo', {}, 2500);
+        trace('System info OK');
+      } catch (e) { trace('System info: ' + e.message); if (!ws) throw e; }
+    }
+    await register();
+    trace('Paired');
   }
 
   // ---- Connect / pair ----
@@ -237,32 +305,32 @@
     if (connecting) return;
     ip = ipEl.value.trim();
     if (!ip) { msgEl.textContent = 'Enter your TV\'s IP address.'; return; }
-    connecting = true; msgEl.textContent = '';
+    connecting = true; msgEl.textContent = ''; logLines = []; logEl.textContent = '';
     store.set('lg_ip', ip); updateCertLink();
     closeAll(); setStatus('busy', 'Connecting…');
 
     try {
-      // Newer TVs use secure port 3001; older ones only plain 3000.
-      // An https:// page can't use plain ws://, so skip it there.
-      const urls = [`wss://${ip}:3001`];
-      if (location.protocol !== 'https:') urls.push(`ws://${ip}:3000`);
-      for (const u of urls) {
-        try { ws = await openSocket(u); mainUrl = u; break; } catch {}
+      await openMain();
+      try {
+        await handshake('full');
+      } catch (e) {
+        // If the TV hung up before pairing, try again the classic way.
+        if (ws) throw e;
+        trace('Retrying with classic handshake');
+        await openMain();
+        await handshake('classic');
       }
-      if (!ws) throw new Error('cert');
 
-      ws.onmessage = e => {
-        let m; try { m = JSON.parse(e.data); } catch { return; }
-        const h = pending.get(m.id); if (h) h(m);
-      };
-      ws.onclose = () => { ws = null; inputWs = null; setStatus('off', 'Disconnected'); };
-
-      // Some firmware wants system info before registration.
-      try { await request('system/getSystemInfo', {}, 3000); } catch {}
-
-      await register();
-      await openInput();
-      setStatus('on', 'Connected');
+      try {
+        await openInput();
+        trace('Button channel OK');
+        setStatus('on', 'Connected');
+      } catch (e) {
+        // Volume, power, inputs and apps still work without it.
+        trace('Button channel: ' + e.message);
+        setStatus('on', 'Connected');
+        toast('Connected, but arrows/OK/Home may not work');
+      }
       showSetup(false);
     } catch (e) {
       closeAll();
@@ -278,9 +346,11 @@
     const payload = JSON.parse(JSON.stringify(REG_PAYLOAD));
     const key = store.get('lg_key_' + ip);
     if (key) payload['client-key'] = key;
+    trace(key ? 'Pairing (saved key)' : 'Pairing (new — watch the TV)');
     return send({ id: 'register_0', type: 'register', payload }, m => {
       if (m.type === 'response' && m.payload && m.payload.pairingType === 'PROMPT') {
         setStatus('busy', 'Accept the prompt on your TV');
+        trace('TV is showing the prompt');
         return 'wait';
       }
       if (m.type === 'registered') {
