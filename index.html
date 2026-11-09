@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0e0f12">
+<title>LG Remote</title>
+<style>
+  :root {
+    --bg: #0e0f12;
+    --panel: #181a20;
+    --btn: #23262e;
+    --btn-press: #343844;
+    --text: #eef0f4;
+    --muted: #8a909c;
+    --accent: #e6194b;
+    --ok: #2fbf71;
+    --warn: #e0a526;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { min-height: 100vh; display: flex; justify-content: center;
+    padding: max(12px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
+  .wrap { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 14px; }
+
+  header { display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #555; }
+  .dot.on { background: var(--ok); } .dot.busy { background: var(--warn); } .dot.off { background: var(--accent); }
+  .link { background: none; border: 0; color: var(--muted); font-size: 13px; padding: 4px; cursor: pointer; text-decoration: underline; }
+
+  .setup { background: var(--panel); border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .setup.hidden { display: none; }
+  .setup label { font-size: 13px; color: var(--muted); }
+  .row-input { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; background: var(--btn); color: var(--text); border: 1px solid #333844;
+    border-radius: 10px; padding: 12px; font-size: 16px; }
+  .primary { background: var(--accent); color: #fff; border: 0; border-radius: 10px; padding: 0 16px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .hint { font-size: 13px; color: var(--muted); margin: 0; }
+  .hint a { color: var(--text); }
+  .msg { font-size: 13px; margin: 0; color: var(--warn); }
+  .msg:empty { display: none; }
+
+  button.k { background: var(--btn); color: var(--text); border: 0; border-radius: 14px; height: 54px;
+    font-size: 15px; font-weight: 500; cursor: pointer; touch-action: manipulation; user-select: none; -webkit-user-select: none;
+    display: flex; align-items: center; justify-content: center; gap: 6px; transition: background .08s; }
+  button.k:active, button.k.pressed { background: var(--btn-press); }
+  button.k.power { color: var(--accent); }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+
+  .dpad { position: relative; width: 240px; height: 240px; margin: 4px auto; border-radius: 50%; background: var(--panel); }
+  .dpad button.k { position: absolute; width: 76px; height: 76px; border-radius: 50%; font-size: 22px; background: transparent; }
+  .dpad button.k:active, .dpad button.k.pressed { background: var(--btn-press); }
+  .dpad .up { top: 6px; left: 82px; } .dpad .down { bottom: 6px; left: 82px; }
+  .dpad .left { left: 6px; top: 82px; } .dpad .right { right: 6px; top: 82px; }
+  .dpad button.k.ok { top: 70px; left: 70px; width: 100px; height: 100px; background: var(--btn); font-size: 17px; font-weight: 600; }
+
+  .rockers { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; align-items: stretch; }
+  .rocker { display: flex; flex-direction: column; background: var(--btn); border-radius: 14px; overflow: hidden; }
+  .rocker button.k { border-radius: 0; height: 52px; font-size: 22px; background: transparent; }
+  .rocker span { text-align: center; font-size: 11px; color: var(--muted); letter-spacing: .5px; }
+  .mid { display: flex; flex-direction: column; gap: 10px; }
+  .mid button.k { flex: 1; height: auto; }
+
+  .remote.disabled { opacity: .45; pointer-events: none; }
+
+  .sheet-bg { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: flex-end; justify-content: center; z-index: 10; }
+  .sheet-bg.open { display: flex; }
+  .sheet { background: var(--panel); width: 100%; max-width: 420px; max-height: 70vh; overflow-y: auto;
+    border-radius: 18px 18px 0 0; padding: 16px 16px max(20px, env(safe-area-inset-bottom)); }
+  .sheet h2 { font-size: 16px; margin: 0 0 12px; }
+  .list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .list button.k { height: 48px; font-size: 14px; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #2b2f39; color: var(--text);
+    padding: 10px 16px; border-radius: 10px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20; max-width: 90vw; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>LG Remote</h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">Not connected</span>
+      <button class="link" id="toggleSetup">Setup</button></div>
+  </header>
+
+  <section class="setup" id="setup">
+    <label for="ip">TV IP address (TV: Settings → Network → Wi-Fi → Advanced)</label>
+    <div class="row-input">
+      <input id="ip" inputmode="decimal" placeholder="192.168.1.50" autocomplete="off">
+      <button class="primary" id="connectBtn">Connect</button>
+    </div>
+    <p class="msg" id="msg"></p>
+    <p class="hint">First time: the TV will ask to allow this remote. Accept it with your normal remote.</p>
+    <p class="hint">Won't connect? <a id="certLink" href="#" target="_blank" rel="noopener">Open the TV's address</a>,
+      accept the security warning, then come back and tap Connect.
+      &nbsp;<button class="link" id="forget">Forget pairing</button></p>
+  </section>
+
+  <main class="remote disabled" id="remote">
+    <div class="grid3">
+      <button class="k power" data-uri="system/turnOff" title="Power off">⏻ Off</button>
+      <button class="k" data-sheet="inputs">Inputs</button>
+      <button class="k" data-btn="MENU">Settings</button>
+    </div>
+
+    <div class="dpad" style="margin-top:14px">
+      <button class="k up" data-btn="UP" data-repeat aria-label="Up">▲</button>
+      <button class="k left" data-btn="LEFT" data-repeat aria-label="Left">◀</button>
+      <button class="k ok" data-btn="ENTER">OK</button>
+      <button class="k right" data-btn="RIGHT" data-repeat aria-label="Right">▶</button>
+      <button class="k down" data-btn="DOWN" data-repeat aria-label="Down">▼</button>
+    </div>
+
+    <div class="grid3" style="margin-top:14px">
+      <button class="k" data-btn="BACK">↩ Back</button>
+      <button class="k" data-btn="HOME">⌂ Home</button>
+      <button class="k" data-sheet="apps">Apps</button>
+    </div>
+
+    <div class="rockers" style="margin-top:14px">
+      <div class="rocker">
+        <button class="k" data-uri="audio/volumeUp" data-repeat aria-label="Volume up">+</button>
+        <span>VOL</span>
+        <button class="k" data-uri="audio/volumeDown" data-repeat aria-label="Volume down">−</button>
+      </div>
+      <div class="mid">
+        <button class="k" data-btn="MUTE">Mute</button>
+        <button class="k" data-btn="EXIT">Exit</button>
+      </div>
+      <div class="rocker">
+        <button class="k" data-btn="CHANNELUP" aria-label="Channel up">+</button>
+        <span>CH</span>
+        <button class="k" data-btn="CHANNELDOWN" aria-label="Channel down">−</button>
+      </div>
+    </div>
+
+    <div class="grid4" style="margin-top:14px">
+      <button class="k" data-btn="REWIND" aria-label="Rewind">⏪</button>
+      <button class="k" data-btn="PLAY" aria-label="Play">▶</button>
+      <button class="k" data-btn="PAUSE" aria-label="Pause">❚❚</button>
+      <button class="k" data-btn="FASTFORWARD" aria-label="Fast forward">⏩</button>
+    </div>
+  </main>
+</div>
+
+<div class="sheet-bg" id="sheetBg"><div class="sheet"><h2 id="sheetTitle"></h2><div class="list" id="sheetList"></div></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  // ---- Storage (wrapped: may be unavailable in some browsers/file contexts) ----
+  const store = {
+    get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+    del: k => { try { localStorage.removeItem(k); } catch {} },
+  };
+
+  // ---- Pairing manifest (permissions the TV asks you to approve) ----
+  const REG_PAYLOAD = {
+    forcePairing: false, pairingType: 'PROMPT',
+    manifest: { manifestVersion: 1, appVersion: '1.1', permissions: [
+      'APP_TO_APP','CLOSE','CONTROL_AUDIO','CONTROL_DISPLAY','CONTROL_INPUT_JOYSTICK',
+      'CONTROL_INPUT_MEDIA_PLAYBACK','CONTROL_INPUT_MEDIA_RECORDING','CONTROL_INPUT_TEXT',
+      'CONTROL_INPUT_TV','CONTROL_MOUSE_AND_KEYBOARD','CONTROL_POWER','CONTROL_TV_SCREEN',
+      'LAUNCH','LAUNCH_WEBAPP','READ_APP_STATUS','READ_CURRENT_CHANNEL','READ_INPUT_DEVICE_LIST',
+      'READ_INSTALLED_APPS','READ_NETWORK_STATE','READ_POWER_STATE','READ_RUNNING_APPS',
+      'READ_SETTINGS','READ_TV_CHANNEL_LIST','READ_TV_CURRENT_TIME','READ_UPDATE_INFO',
+      'TEST_OPEN','TEST_PROTECTED','TEST_SECURE','UPDATE_FROM_REMOTE_APP',
+      'WRITE_NOTIFICATION_TOAST','WRITE_SETTINGS'] }
+  };
+
+  const $ = s => document.querySelector(s);
+  const ipEl = $('#ip'), setupEl = $('#setup'), remoteEl = $('#remote'), msgEl = $('#msg');
+  let ws = null, inputWs = null, mainUrl = '', ip = '', seq = 0, connecting = false;
+  const pending = new Map();
+
+  // ---- UI helpers ----
+  function setStatus(state, text) {
+    $('#dot').className = 'dot ' + state;
+    $('#statusText').textContent = text;
+    remoteEl.classList.toggle('disabled', state !== 'on');
+  }
+  let toastTimer;
+  function toast(t) {
+    const el = $('#toast'); el.textContent = t; el.classList.add('show');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+  }
+  function showSetup(show) { setupEl.classList.toggle('hidden', !show); }
+  function updateCertLink() { $('#certLink').href = ip ? `https://${ip}:3001` : '#'; }
+
+  // ---- WebSocket plumbing ----
+  function openSocket(url, timeoutMs = 4000) {
+    return new Promise((resolve, reject) => {
+      let s;
+      try { s = new WebSocket(url); } catch (e) { return reject(e); }
+      const t = setTimeout(() => { try { s.close(); } catch {} reject(new Error('timeout')); }, timeoutMs);
+      s.onopen = () => { clearTimeout(t); resolve(s); };
+      s.onerror = () => { clearTimeout(t); reject(new Error('error')); };
+    });
+  }
+
+  // Send a message and route replies with the same id to `handler`.
+  // handler returns 'wait' to keep listening, an Error to reject, anything else to resolve.
+  function send(msg, handler, timeoutMs = 5000) {
+    return new Promise((resolve, reject) => {
+      if (!ws || ws.readyState !== 1) return reject(new Error('Not connected'));
+      const t = setTimeout(() => { pending.delete(msg.id); reject(new Error('Timed out')); }, timeoutMs);
+      pending.set(msg.id, m => {
+        const r = handler(m);
+        if (r === 'wait') return;
+        clearTimeout(t); pending.delete(msg.id);
+        r instanceof Error ? reject(r) : resolve(r);
+      });
+      ws.send(JSON.stringify(msg));
+    });
+  }
+  function request(uri, payload = {}, timeoutMs = 5000) {
+    const id = 'req_' + (++seq);
+    return send({ id, type: 'request', uri: 'ssap://' + uri, payload },
+      m => m.type === 'error' ? new Error(m.error || 'TV error') : (m.payload || {}), timeoutMs);
+  }
+
+  function closeAll() {
+    for (const s of [ws, inputWs]) { if (s) { s.onclose = null; try { s.close(); } catch {} } }
+    ws = inputWs = null; pending.clear();
+  }
+
+  // ---- Connect / pair ----
+  async function connect() {
+    if (connecting) return;
+    ip = ipEl.value.trim();
+    if (!ip) { msgEl.textContent = 'Enter your TV\'s IP address.'; return; }
+    connecting = true; msgEl.textContent = '';
+    store.set('lg_ip', ip); updateCertLink();
+    closeAll(); setStatus('busy', 'Connecting…');
+
+    try {
+      // Newer TVs use secure port 3001; older ones only plain 3000.
+      // An https:// page can't use plain ws://, so skip it there.
+      const urls = [`wss://${ip}:3001`];
+      if (location.protocol !== 'https:') urls.push(`ws://${ip}:3000`);
+      for (const u of urls) {
+        try { ws = await openSocket(u); mainUrl = u; break; } catch {}
+      }
+      if (!ws) throw new Error('cert');
+
+      ws.onmessage = e => {
+        let m; try { m = JSON.parse(e.data); } catch { return; }
+        const h = pending.get(m.id); if (h) h(m);
+      };
+      ws.onclose = () => { ws = null; inputWs = null; setStatus('off', 'Disconnected'); };
+
+      // Some firmware wants system info before registration.
+      try { await request('system/getSystemInfo', {}, 3000); } catch {}
+
+      await register();
+      await openInput();
+      setStatus('on', 'Connected');
+      showSetup(false);
+    } catch (e) {
+      closeAll();
+      setStatus('off', 'Not connected');
+      showSetup(true);
+      msgEl.textContent = e.message === 'cert'
+        ? 'Couldn\'t reach the TV. Check the IP and that the TV is on, then use the "Open the TV\'s address" link below.'
+        : 'Connection failed: ' + e.message;
+    } finally { connecting = false; }
+  }
+
+  function register() {
+    const payload = JSON.parse(JSON.stringify(REG_PAYLOAD));
+    const key = store.get('lg_key_' + ip);
+    if (key) payload['client-key'] = key;
+    return send({ id: 'register_0', type: 'register', payload }, m => {
+      if (m.type === 'response' && m.payload && m.payload.pairingType === 'PROMPT') {
+        setStatus('busy', 'Accept the prompt on your TV');
+        return 'wait';
+      }
+      if (m.type === 'registered') {
+        if (m.payload && m.payload['client-key']) store.set('lg_key_' + ip, m.payload['client-key']);
+        return true;
+      }
+      if (m.type === 'error') return new Error(m.error || 'Pairing was rejected');
+      return 'wait';
+    }, 60000);
+  }
+
+  // Remote-control buttons (arrows, OK, Home…) go over a second socket the TV hands us.
+  async function openInput() {
+    const res = await request('com.webos.service.networkinput/getPointerInputSocket');
+    const path = res.socketPath;
+    if (!path) throw new Error('TV did not provide a button socket');
+    const secure = path.replace(/^ws:\/\/([^/:]+):3000/, 'wss://$1:3001');
+    let candidates = [path];
+    if (secure !== path) candidates = location.protocol === 'https:' ? [secure] : [path, secure];
+    for (const u of candidates) {
+      try {
+        inputWs = await openSocket(u);
+        inputWs.onclose = () => { inputWs = null; };
+        return;
+      } catch {}
+    }
+    throw new Error('Could not open the button channel');
+  }
+
+  // ---- Actions ----
+  function pressButton(name) {
+    if (!inputWs || inputWs.readyState !== 1) { toast('Not connected'); return; }
+    inputWs.send(`type:button\nname:${name}\n\n`);
+  }
+  function callUri(uri, payload) {
+    request(uri, payload).catch(e => toast(e.message));
+  }
+  function haptic() { try { navigator.vibrate && navigator.vibrate(8); } catch {} }
+
+  function act(el) {
+    haptic();
+    if (el.dataset.btn) pressButton(el.dataset.btn);
+    else if (el.dataset.uri) callUri(el.dataset.uri);
+  }
+
+  // Tap, plus hold-to-repeat for arrows and volume.
+  let repeatTimer = null, repeatDelay = null;
+  function stopRepeat() {
+    clearTimeout(repeatDelay); clearInterval(repeatTimer); repeatTimer = repeatDelay = null;
+    document.querySelectorAll('.pressed').forEach(b => b.classList.remove('pressed'));
+  }
+  remoteEl.addEventListener('pointerdown', e => {
+    const el = e.target.closest('button.k'); if (!el) return;
+    if (el.dataset.sheet) return; // handled on click
+    e.preventDefault();
+    el.classList.add('pressed');
+    act(el);
+    if (el.hasAttribute('data-repeat')) {
+      repeatDelay = setTimeout(() => { repeatTimer = setInterval(() => act(el), 140); }, 400);
+    }
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => remoteEl.addEventListener(ev, stopRepeat));
+  window.addEventListener('blur', stopRepeat);
+
+  // ---- Sheets: inputs and apps (loaded from the TV) ----
+  const sheetBg = $('#sheetBg');
+  sheetBg.addEventListener('click', e => { if (e.target === sheetBg) sheetBg.classList.remove('open'); });
+  function openSheet(title, items) {
+    $('#sheetTitle').textContent = title;
+    const list = $('#sheetList'); list.innerHTML = '';
+    if (!items.length) list.innerHTML = '<p class="hint">Nothing found.</p>';
+    for (const it of items) {
+      const b = document.createElement('button');
+      b.className = 'k'; b.textContent = it.label;
+      b.onclick = () => { haptic(); it.run(); sheetBg.classList.remove('open'); };
+      list.appendChild(b);
+    }
+    sheetBg.classList.add('open');
+  }
+  remoteEl.addEventListener('click', async e => {
+    const el = e.target.closest('[data-sheet]'); if (!el) return;
+    try {
+      if (el.dataset.sheet === 'inputs') {
+        const r = await request('tv/getExternalInputList');
+        openSheet('Inputs', (r.devices || []).map(d => ({
+          label: d.label || d.id, run: () => callUri('tv/switchInput', { inputId: d.id }) })));
+      } else {
+        const r = await request('com.webos.applicationManager/listLaunchPoints');
+        const apps = (r.launchPoints || []).filter(a => a.title)
+          .sort((a, b) => a.title.localeCompare(b.title));
+        openSheet('Apps', apps.map(a => ({
+          label: a.title, run: () => callUri('system.launcher/launch', { id: a.id }) })));
+      }
+    } catch (err) { toast(err.message); }
+  });
+
+  // Keyboard support when used on a computer.
+  const keys = { ArrowUp: 'UP', ArrowDown: 'DOWN', ArrowLeft: 'LEFT', ArrowRight: 'RIGHT',
+    Enter: 'ENTER', Backspace: 'BACK', Escape: 'BACK', h: 'HOME', m: 'MUTE', ' ': 'PLAY' };
+  document.addEventListener('keydown', e => {
+    if (e.target === ipEl || !inputWs) return;
+    if (e.key === '+' || e.key === '=') { callUri('audio/volumeUp'); e.preventDefault(); return; }
+    if (e.key === '-') { callUri('audio/volumeDown'); e.preventDefault(); return; }
+    const b = keys[e.key]; if (b) { pressButton(b); e.preventDefault(); }
+  });
+
+  // ---- Setup wiring ----
+  $('#connectBtn').onclick = connect;
+  ipEl.addEventListener('keydown', e => { if (e.key === 'Enter') connect(); });
+  ipEl.addEventListener('input', () => { ip = ipEl.value.trim(); updateCertLink(); });
+  $('#toggleSetup').onclick = () => showSetup(setupEl.classList.contains('hidden'));
+  $('#forget').onclick = () => {
+    if (ip) store.del('lg_key_' + ip);
+    toast('Pairing forgotten. Connect again to re-pair.');
+  };
+
+  // Reconnect when the phone wakes or the tab comes back.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !ws && ipEl.value.trim()) connect();
+  });
+
+  // Auto-connect with the saved IP.
+  const saved = store.get('lg_ip');
+  if (saved) { ipEl.value = saved; ip = saved; updateCertLink(); connect(); }
+  else setStatus('off', 'Not connected');
+})();
+</script>
+</body>
+</html>
