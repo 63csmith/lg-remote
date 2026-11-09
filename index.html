@@ -44,6 +44,8 @@
   .hint a { color: var(--text); }
   .msg { font-size: 13px; margin: 0; color: var(--warn); }
   .msg:empty { display: none; }
+  .pin-row { display: none; }
+  .pin-row.show { display: flex; }
   .log { margin: 0; font: 12px/1.45 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; word-break: break-all; }
   .log:empty { display: none; }
 
@@ -98,9 +100,13 @@
       <input id="ip" inputmode="decimal" placeholder="192.168.1.50" autocomplete="off">
       <button class="primary" id="connectBtn">Connect</button>
     </div>
+    <div class="row-input pin-row" id="pinRow">
+      <input id="pin" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN shown on TV">
+      <button class="primary" id="pinBtn">Pair</button>
+    </div>
     <p class="msg" id="msg"></p>
     <pre class="log" id="log"></pre>
-    <p class="hint">First time: the TV will ask to allow this remote. Accept it with your normal remote.</p>
+    <p class="hint">First time: a PIN appears on the TV. Type it here and tap Pair.</p>
     <p class="hint">Won't connect? <a id="certLink" href="#" target="_blank" rel="noopener">Open the TV's address</a>,
       accept the security warning, then come back and tap Connect.
       &nbsp;<button class="link" id="forget">Forget pairing</button></p>
@@ -399,27 +405,51 @@
       msgEl.textContent = e.message === 'cert'
         ? 'Couldn\'t reach the TV. Check the IP and that the TV is on, then use the "Open the TV\'s address" link below.'
         : 'Connection failed: ' + e.message;
-    } finally { connecting = false; }
+    } finally { connecting = false; showPin(false); }
+  }
+
+  // New pairings use a PIN shown on the TV, so no physical remote is needed.
+  // (A saved key skips pairing entirely.)
+  const pinRow = document.getElementById('pinRow'), pinEl = document.getElementById('pin');
+  function showPin(show) {
+    pinRow.classList.toggle('show', show);
+    if (show) { pinEl.value = ''; setTimeout(() => pinEl.focus(), 50); }
+  }
+  async function submitPin() {
+    const pin = pinEl.value.replace(/\s+/g, '');
+    if (!pin) return;
+    msgEl.textContent = '';
+    trace('Sending PIN');
+    try { await request('pairing/setPin', { pin }, 8000); }
+    catch (e) { msgEl.textContent = 'PIN not accepted: ' + e.message + '. Check the code and try again.'; trace('PIN: ' + e.message); }
   }
 
   function register() {
     const payload = JSON.parse(JSON.stringify(REG_PAYLOAD));
     const key = store.get('lg_key_' + ip);
     if (key) payload['client-key'] = key;
-    trace(key ? 'Pairing (saved key)' : 'Pairing (new — watch the TV)');
+    else payload.pairingType = 'PIN';
+    trace(key ? 'Pairing (saved key)' : 'Pairing with PIN — a code will appear on the TV');
     return send({ id: 'register_0', type: 'register', payload }, m => {
+      if (m.type === 'response' && m.payload && m.payload.pairingType === 'PIN') {
+        setStatus('busy', 'Enter the PIN shown on your TV');
+        trace('TV is showing a PIN');
+        showSetup(true); showPin(true);
+        return 'wait';
+      }
       if (m.type === 'response' && m.payload && m.payload.pairingType === 'PROMPT') {
         setStatus('busy', 'Accept the prompt on your TV');
         trace('TV is showing the prompt');
         return 'wait';
       }
       if (m.type === 'registered') {
+        showPin(false);
         if (m.payload && m.payload['client-key']) store.set('lg_key_' + ip, m.payload['client-key']);
         return true;
       }
-      if (m.type === 'error') return new Error(m.error || 'Pairing was rejected');
+      if (m.type === 'error') { showPin(false); return new Error(m.error || 'Pairing was rejected'); }
       return 'wait';
-    }, 60000);
+    }, 180000);
   }
 
   // Remote-control buttons (arrows, OK, Home…) go over a second socket the TV hands us.
@@ -519,6 +549,8 @@
 
   // ---- Setup wiring ----
   $('#connectBtn').onclick = connect;
+  $('#pinBtn').onclick = submitPin;
+  pinEl.addEventListener('keydown', e => { if (e.key === 'Enter') submitPin(); });
   ipEl.addEventListener('keydown', e => { if (e.key === 'Enter') connect(); });
   ipEl.addEventListener('input', () => { ip = ipEl.value.trim(); updateCertLink(); });
   $('#toggleSetup').onclick = () => showSetup(setupEl.classList.contains('hidden'));
