@@ -197,9 +197,9 @@
     remoteEl.classList.toggle('disabled', state !== 'on' && !isPaired());
   }
   let toastTimer;
-  function toast(t) {
+  function toast(t, ms = 2200) {
     const el = $('#toast'); el.textContent = t; el.classList.add('show');
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), ms);
   }
   function isPaired() { return !!(ip && store.get('lg_key_' + ip)); }
   function showSetup(show) { setupEl.classList.toggle('hidden', !show); }
@@ -402,6 +402,7 @@
       }
       showSetup(false);
       retries = 0;
+      saveToLink();
       runQueued();
     } catch (e) {
       closeAll();
@@ -588,6 +589,7 @@
   $('#toggleSetup').onclick = () => showSetup(setupEl.classList.contains('hidden'));
   $('#forget').onclick = () => {
     if (ip) store.del('lg_key_' + ip);
+    try { history.replaceState(null, '', location.pathname + location.search + (ip ? '#ip=' + ip : '')); } catch {}
     toast('Pairing forgotten. Connect again to re-pair.');
   };
 
@@ -622,6 +624,32 @@
   window.addEventListener('online', () => ensureConnected(true));
 
   // Auto-connect with the saved IP.
+  // The TV's address and pairing key are kept in the page link (after the #),
+  // so a bookmark or Home Screen icon remembers them even if the browser
+  // clears its storage. The part after # never leaves your phone.
+  function readLink() {
+    const h = new URLSearchParams(location.hash.slice(1));
+    const lip = (h.get('ip') || '').trim(), lkey = h.get('key');
+    if (lip) {
+      store.set('lg_ip', lip);
+      if (lkey && !store.get('lg_key_' + lip)) store.set('lg_key_' + lip, lkey);
+    }
+    return { lip, lkey };
+  }
+  function saveToLink() {
+    const key = store.get('lg_key_' + ip);
+    if (!ip) return;
+    const hash = '#ip=' + ip + (key ? '&key=' + encodeURIComponent(key) : '');
+    if (location.hash === hash) return;
+    try { history.replaceState(null, '', location.pathname + location.search + hash); } catch {}
+    toast('TV saved. Add this page to your Home Screen now to keep it.', 5000);
+  }
+  readLink();
+  window.addEventListener('hashchange', () => {
+    const { lip } = readLink();
+    if (lip && lip !== ip) { ipEl.value = lip; ip = lip; updateCertLink(); connect({ auto: isPaired() }); }
+  });
+
   const saved = store.get('lg_ip');
   if (saved) { ipEl.value = saved; ip = saved; updateCertLink(); isPaired() ? connect({ auto: true }) : connect(); }
   else setStatus('off', 'Not connected');
